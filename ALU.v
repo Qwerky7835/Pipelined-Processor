@@ -62,6 +62,21 @@ module ALU(data_operandA, data_operandB, ctrl_ALUopcode, ctrl_shiftamt, data_res
 	
 	FinalComparator Final(.notEqual(isNotEqual), .lessThan(isLessThan), .A(stage2notEqual), .B(stage2lessThan));
 	
+	wire [31:0] andOutput, orOutput;
+	genvar a;
+	generate
+		for (a = 0; a <32; a = a+1) begin:
+			ALUand and(andOutput[a], data_operandA[a], data_operandB[a]);
+		end
+	endgenerate
+	
+	genvar o;
+	generate
+		for (o = 0; o < 32; o = o+1) begin:
+			ALUor or(orOutput[o], data_operandA[o], data_operandB[o]);
+		end
+	endgenerate
+	
 endmodule
 
 module FourBitLookAhead(Sum, Cout, A, B, Cin);
