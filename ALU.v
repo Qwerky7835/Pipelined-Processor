@@ -1,21 +1,43 @@
 module ALU(data_operandA, data_operandB, ctrl_ALUopcode, ctrl_shiftamt, data_result, isNotEqual, isLessThan);
-   input [31:0] data_operandA, data_operandB;
-   input [4:0] ctrl_ALUopcode, ctrl_shiftamt;
-   output [31:0] data_result;
-   output isNotEqual, isLessThan;
- 
-   // Adder
+    input [31:0] data_operandA, data_operandB;
+    input [4:0] ctrl_ALUopcode, ctrl_shiftamt;
+    output [31:0] data_result;
+    output isNotEqual, isLessThan;
+    
+    wire opCode2n, opCode1n;
+    not(opCode2n, ctrl_ALUopcode[2]);
+    not(opCode1n, ctrl_ALUopcode[1]);
+   
+    // Adder/Sub
+    wire carryIn; 
+    wire [31:0] adder_result, data_operandBn, result_Bin;
+   
+    assign carryIn = ctrl_ALUopcode[0];
+    genvar n;
+    generate
+		for (n = 0; n < 32; n = n+1) begin: data_Bn
+			not(data_operandBn[n], data_operandB[n]);
+		end
+	endgenerate
+	
+    genvar m;
+    generate
+		for (m = 0; m < 32; m = m+1) begin: mux_B
+			Mux21(.out(result_Bin[m]), .in1(data_operandBn[m]), .in2(data_operandB[m]), .select(carryIn));
+		end
+	endgenerate
+	
    // *** Stage 1***
    // bits 7:0
    wire Mux50;
-   Lookahead8Bit CLA25(.Sum(data_result[7:0]), .Cout(Mux50), .A(data_operandA[7:0]), .B(data_operandB[7:0]), .Cin(0));
+   Lookahead8Bit CLA25(.Sum(adder_result[7:0]), .Cout(Mux50), .A(data_operandA[7:0]), .B(result_Bin[7:0]), .Cin(carryIn));
    // bits 15:8
    wire [7:0]result0, result1;
    wire carry0, carry1, Mux75;
-   Lookahead8Bit CLA50_0(.Sum(result0), .Cout(carry0), .A(data_operandA[15:8]), .B(data_operandB[15:8]), .Cin(0));
-   Lookahead8Bit CLA50_1(.Sum(result1), .Cout(carry1), .A(data_operandA[15:8]), .B(data_operandB[15:8]), .Cin(1));
+   Lookahead8Bit CLA50_0(.Sum(result0), .Cout(carry0), .A(data_operandA[15:8]), .B(result_Bin[15:8]), .Cin(0));
+   Lookahead8Bit CLA50_1(.Sum(result1), .Cout(carry1), .A(data_operandA[15:8]), .B(result_Bin[15:8]), .Cin(1));
    
-   CarrySelectMux Stage1(.Sum(data_result[15:8]), .CarryOut(Mux75), .A(result1), .B(result0), .CarryA(carry1),
+   CarrySelectMux Stage1(.Sum(adder_result[15:8]), .CarryOut(Mux75), .A(result1), .B(result0), .CarryA(carry1),
 						 .CarryB(carry0), .Select(Mux50));
 						 
 	//*** Stage 2***
@@ -23,17 +45,17 @@ module ALU(data_operandA, data_operandB, ctrl_ALUopcode, ctrl_shiftamt, data_res
 	//bits 23:16
 	wire Mux100_0, Mux100_1;
 	Lookahead8Bit CLA75_0(.Sum(LastMux_0[7:0]), .Cout(Mux100_0), .A(data_operandA[23:16]), 
-						.B(data_operandB[23:16]), .Cin(0));
+						.B(result_Bin[23:16]), .Cin(0));
 	Lookahead8Bit CLA75_1(.Sum(LastMux_1[7:0]), .Cout(Mux100_1), .A(data_operandA[23:16]), 
-						.B(data_operandB[23:16]), .Cin(1));
+						.B(result_Bin[23:16]), .Cin(1));
 						
 	//bits 31:24
 	wire [7:0] DoubleMux_0, DoubleMux_1;
 	wire Cout0, Cout1;
 	Lookahead8Bit CLA100_0(.Sum(DoubleMux_0), .Cout(Cout0), .A(data_operandA[31:24]), 
-						.B(data_operandB[31:24]), .Cin(0));
+						.B(result_Bin[31:24]), .Cin(0));
 	Lookahead8Bit CLA100_1(.Sum(DoubleMux_1), .Cout(Cout1), .A(data_operandA[31:24]), 
-						.B(data_operandB[31:24]), .Cin(1));	
+						.B(result_Bin[31:24]), .Cin(1));	
 	
 	wire CarryOutt0, CarryOutt1;			
 	CarrySelectMux Stage2_0(.Sum(LastMux_0[15:8]), .CarryOut(CarryOutt0), .A(DoubleMux_1), .B(DoubleMux_0), .CarryA(Cout1),
@@ -42,41 +64,99 @@ module ALU(data_operandA, data_operandB, ctrl_ALUopcode, ctrl_shiftamt, data_res
 						 .CarryB(Cout0), .Select(Mux100_1));
 		
 	wire Cout;
-	CarrySelectMux16 FinalMux16(.Sum(data_result[31:16]), .CarryOut(Cout), .A(LastMux_1), .B(LastMux_0), .CarryA(CarryOutt1), 
+	CarrySelectMux16 FinalMux16(.Sum(adder_result[31:16]), .CarryOut(Cout), .A(LastMux_1), .B(LastMux_0), .CarryA(CarryOutt1), 
 					 .CarryB(CarryOutt0), .Select(Mux75));
 	
-	wire [7:0] stage1notEqual, stage1lessThan;
-	LookAheadComparator_4Bit MSBCompare(.notEqual(stage1notEqual[7]), .lessThan(stage1lessThan[7]), .A(data_operandA[31:27]), 
-							 .B(data_operandB[31:27]), .MSB_flag(1));
-	genvar c;
-	generate
-		for (c = 0; c < 7; c = c +1) begin:
-			Stage1Compare LookAheadComparator_4Bit(.notEqual(stage1notEqual[c]), .lessThan(stage1lessThan[c]), 
-									 .A(data_operandA[(c+1)*4-1:c*4]), .B(data_operandB[(c+1)*4-1:c*4]), .MSB_flag(0));
-		end
-	endgenerate
+	// ********** wire adder_result has result and Cout has overflow flag **********
+	wire [31:0] adderALUmux_result; //******************** <- this 
+	wire adderALUlogic;
+	and(adderALUlogic, opCode2n, opCode1n);
 	
-	wire [1:0]stage2notEqual, stage2lessThan;
-	LookAheadComparator_16Bit Stage2MSB(.notEqual(stage2notEqual[1]), .lessThan(stage2lessThan[1]), .A(stage1notEqual[7:4]), .B(stage1lessThan[7:4]));
-	LookAheadComparator_16Bit Stage2LSB(.notEqual(stage2notEqual[0]), .lessThan(stage2lessThan[0]), .A(stage1notEqual[3:0]), .B(stage1lessThan[3:0]));
-	
-	FinalComparator Final(.notEqual(isNotEqual), .lessThan(isLessThan), .A(stage2notEqual), .B(stage2lessThan));
-	
-	wire [31:0] andOutput, orOutput;
 	genvar a;
 	generate
-		for (a = 0; a <32; a = a+1) begin:
-			ALUand and(andOutput[a], data_operandA[a], data_operandB[a]);
+		for(a = 0; a < 32; a =a+1) begin: adderMux
+			and(adderALUmux_result[a], adder_result[a], adderALUlogic);
 		end
 	endgenerate
-	
+		
+	wire [31:0] andOutput, orOutput, ALUout;
 	genvar o;
 	generate
-		for (o = 0; o < 32; o = o+1) begin:
-			ALUor or(orOutput[o], data_operandA[o], data_operandB[o]);
+		for (o = 0; o <32; o = o+1) begin: ALUandOr
+			and(andOutput[o], data_operandA[o], data_operandB[o]);
+			or(orOutput[o], data_operandA[o], data_operandB[o]);
 		end
 	endgenerate
 	
+	genvar w;
+    generate
+		for (w = 0; w < 32; w = w+1) begin: ALUandOrMux
+			Mux21(.out(ALUout[w]), .in1(orOutput[w]), .in2(andOutput[w]), .select(carryIn));
+		end
+	endgenerate
+	
+	wire [31:0] andorALUmux_result; //******************** <- this 
+	wire andorALUlogic;
+	and(andorALUlogic, opCode2n, ctrl_ALUopcode[1]);
+	
+	genvar x;
+	generate
+		for(x = 0; x < 32; x =x+1) begin: andorMux
+			and(andorALUmux_result[x], ALUout[x], andorALUlogic);
+		end
+	endgenerate
+	
+	wire [31:0] leftShift_result, rightShift_result, shift_result;
+	leftBarrelShift LeftShift(.out(leftShift_result), .in(data_operandA), .select(ctrl_shiftamt));
+	rightBarrelShift RightShift(.out(rightShift_result), .in(data_operandA), .select(ctrl_shiftamt));
+	
+	genvar s;
+    generate
+		for (s = 0; s < 32; s = s+1) begin: shiftMux
+			Mux21(.out(shift_result[s]), .in1(rightShift_result[s]), .in2(leftShift_result[s]), .select(carryIn));
+		end
+	endgenerate
+	
+	wire [31:0] shiftALU_result; //******************** <- this 
+	wire shiftALUlogic;
+	and(shiftALUlogic, opCode1n, ctrl_ALUopcode[2]);
+	
+	genvar t;
+	generate
+		for(t = 0; t < 32; t =t+1) begin: shiftOutMux
+			and(shiftALU_result[t], shift_result[t], shiftALUlogic);
+		end
+	endgenerate
+	
+	wire[31:0] ALUMuxout_result;
+	genvar p;
+	generate
+		for(p = 0; p < 32; p =p+1) begin: ALUoutMux
+			or(ALUMuxout_result[p], adderALUmux_result[p], andorALUmux_result[p], shiftALU_result[p]);
+		end
+	endgenerate
+	
+	wire opcodeCheck;
+	nor(opcodeCheck, ctrl_ALUopcode[4], ctrl_ALUopcode[3]);
+	
+	genvar l;
+	generate
+		for (l = 0; l < 32; l = l+1) begin: OpcodeCheck
+			and(data_result[l], opcodeCheck, ALUMuxout_result[l]);
+		end
+	endgenerate
+	
+	//Comparator
+	wire sub_Opcode, notEqual_result;
+	and(sub_Opcode, opCode2n, opCode1n, carryIn);
+	assign notEqual_result = data_result[31]|data_result[30]|data_result[29]|data_result[28]|data_result[27]|data_result[26]|
+							 data_result[25]|data_result[24]|data_result[23]|data_result[22]|data_result[21]|data_result[20]|
+							 data_result[19]|data_result[18]|data_result[17]|data_result[16]|data_result[15]|data_result[14]|
+							 data_result[13]|data_result[12]|data_result[11]|data_result[10]|data_result[9]|data_result[8]|
+							 data_result[7]|data_result[6]|data_result[5]|data_result[4]|data_result[3]|data_result[2]|
+							 data_result[1]|data_result[0];
+	assign isNotEqual = sub_Opcode & notEqual_result;
+	assign isLessThan = sub_Opcode & data_result[31];
 endmodule
 
 module FourBitLookAhead(Sum, Cout, A, B, Cin);
@@ -152,8 +232,8 @@ module CarrySelectMux(Sum, CarryOut, A, B, CarryA, CarryB, Select); // B is 0,  
 	
 	genvar c;
 	generate
-		for(c = 0; c < 8; c = c + 1) begin:
-			Mux8bit Mux21(.out(Sum[c]), .in1(A[c]), .in2(B[c]), .select(Select));
+		for(c = 0; c < 8; c = c + 1) begin: Mux8bit 
+			Mux21(.out(Sum[c]), .in1(A[c]), .in2(B[c]), .select(Select));
 		end
 	endgenerate
 	
@@ -176,110 +256,215 @@ module CarrySelectMux16(Sum, CarryOut, A, B, CarryA, CarryB, Select); // B is 0,
 	Mux21 CarryOutMux(.out(CarryOut), .in1(CarryA), .in2(CarryB), .select(Select));
 endmodule
 
-module LookAheadComparator_4Bit(notEqual, lessThan, A, B, MSB_flag);
-	input[3:0] A, B;
-	input MSB_flag;
-	output notEqual, lessThan;
-	wire Compare3, Compare2, Compare1, Compare0, Not3, Not2, Not1, Res2, Res1, Res0;
+module leftShift_1Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
 	
-	//bit 3
-	xor(Compare3, A[3], B[3]);
-	not(Not3, Compare3);
+	genvar i;
+	generate
+		for (i = 1; i < 32; i = i+1) begin:
+			ShiftLeft1 assign out[i] = in[i-1];
+		end
+	endgenerate
 	
-	//bit 2
-	xor(Res2, A[2], B[2]);
-	not(Not2, Res2);
-	and(Compare2, Not3, Res2);
-	
-	//bit 1
-	xor(Res1, A[1], B[1]);
-	not(Not1, Res1);
-	and(Compare1, Not3, Not2, Res1);
-	
-	//bit 0
-	xor(Res0, A[0], B[0]);
-	and(Compare0, Not3, Not2, Not1, Res0);
-	
-	or(notEqual, Compare3, Compare2, Compare1, Compare0);
-	
-	// A < B
-	wire Notflag, NotA3, NotB3, NotA2, NotA1, NotA0, Comp31, Comp30, Comp3, Comp2, Comp1, Comp0, Out3, Out2, Out1, Out0, Unsigned_Res, FirstBitCheck;
-	
-	not(NotA3, A[3]);
-	not(NotA2, A[2]);
-	not(NotA1, A[1]);
-	not(NotA0, A[0]);
-	not(NotB3, B[3]);
-	not(Notflag, MSB_flag);
-	
-	and(Comp2, NotA2, B[2]);
-	and(Comp1, NotA1, B[1]);
-	and(Comp0, NotA0, B[0]);
-
-	and(Out2, Comp2, Compare2);
-	and(Out1, Comp1, Compare1);
-	and(Out0, Comp0, Compare0);
-	
-	and(Comp30, Notflag, NotA3, B[3], Compare3);
-	and(Comp31, MSB_flag, A[3], NotB3, Compare3);
-	or(Out3, Comp31, Comp30);
-	or(lessThan, Out3, Out2, Out1, Out0);
-
+	assign out[0] = 0;
 endmodule
 
-module LookAheadComparator_16Bit(notEqual, lessThan, A, B);
-	input [3:0] A, B;
-	output notEqual, lessThan;
+module leftShift_2Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
 	
-	wire Compare3, Compare2, Compare1, Compare0, Not3, Not2, Not1, Res2, Res1, Res0;
+	genvar i;
+	generate
+		for (i = 2; i < 32; i = i+1) begin:
+			ShiftLeft2 assign out[i] = in[i-2];
+		end
+	endgenerate
 	
-	//bit 3
-	or(Compare3, A[3], B[3]);
-	not(Not3, Compare3);
-	
-	//bit 2
-	or(Res2, A[2], B[2]);
-	not(Not2, Res2);
-	and(Compare2, Not3, Res2);
-	
-	//bit 1
-	or(Res1, A[1], B[1]);
-	not(Not1, Res1);
-	and(Compare1, Not3, Not2, Res1);
-	
-	//bit 0
-	or(Res0, A[0], B[0]);
-	and(Compare0, Not3, Not2, Not1, Res0);
-	
-	or(notEqual, Compare3, Compare2, Compare1, Compare0);
-	
-	wire Comp3, Comp2, Comp1, Comp0;
-	and(Comp3, Compare3, B[3]);
-	and(Comp2, Compare2, B[2]);
-	and(Comp1, Compare1, B[1]);
-	and(Comp0, Compare0, B[0]);
-	
-	or(lessThan, Comp3, Comp2, Comp1, Comp0);
+	assign out[1:0] = 0;
 endmodule
 
-module FinalComparator(notEqual, lessThan, A, B);
-	input[1:0] A, B;
-	output notEqual, lessThan;
-	wire Compare1, Compare0, not1, Res1;
+module leftShift_4Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
 	
-	//bit 1
-	or(Compare1, A[1], B[1]);
-	not(not1, Compare1);
+	genvar i;
+	generate
+		for (i = 4; i < 32; i = i+1) begin:
+			ShiftLeft4 assign out[i] = in[i-4];
+		end
+	endgenerate
 	
-	//bit 0
-	or(Res1, A[0], B[0]);
-	and(Compare0, not1, Res1);
+	assign out[3:0] = 0;
+endmodule
+
+module leftShift_8Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
 	
-	or(notEqual, Compare1, Compare0);
+	genvar i;
+	generate
+		for (i = 8; i < 32; i = i+1) begin:
+			ShiftLeft8 assign out[i] = in[i-8];
+		end
+	endgenerate
 	
-	wire Out1, Out0;
-	and(Out1, Compare1, B[1]);
-	and(Out0, Compare0, B[0]);
+	assign out[7:0] = 0;
+endmodule
+
+module leftShift_16Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
 	
-	or(lessThan, Out1, Out0);
+	genvar i;
+	generate
+		for (i = 16; i < 32; i = i+1) begin:
+			ShiftLeft16 assign out[i] = in[i-16];
+		end
+	endgenerate
+	
+	assign out[15:0] = 0;
+endmodule
+
+module leftBarrelShift(out, in, select);
+	input [31:0] in;
+	input [4:0] select;
+	output [31:0] out;
+	
+	wire [31:0] out16, out8, out4, out2, out1, mux16, mux8, mux4, mux2;
+		
+	leftShift_16Bit Stage1(.out(out16), .in(in));
+	barrelShiftMux Mux16(.out(mux16), .inA(out16), .inB(in), .select(select[4]));  //inA is 1, inB is 0
+	leftShift_8Bit Stage2(.out(out8), .in(mux16));
+	barrelShiftMux Mux8(.out(mux8), .inA(out8), .inB(mux16), .select(select[3]));
+	leftShift_4Bit Stage3(.out(out4), .in(mux8));
+	barrelShiftMux Mux4(.out(mux4), .inA(out4), .inB(mux8), .select(select[2]));
+	leftShift_2Bit Stage4(.out(out2), .in(mux4));
+	barrelShiftMux Mux2(.out(mux2), .inA(out2), .inB(mux4), .select(select[1]));
+	leftShift_1Bit Stage5(.out(out1), .in(mux2));
+	barrelShiftMux Mux1(.out(out), .inA(out1), .inB(mux2), .select(select[0]));
+endmodule
+
+module rightShift_1Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
+
+	genvar i;
+	generate
+		for (i = 0; i < 31; i = i+1) begin:
+			ShiftRight1 assign out[i] = in[i+1];
+		end
+	endgenerate
+
+	assign out[31] = in[31];
+endmodule
+
+module rightShift_2Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
+
+	genvar i;
+	generate
+		for (i = 0; i < 30; i = i+1) begin:
+			ShiftRight2 assign out[i] = in[i+2];
+		end
+	endgenerate
+
+	assign out[31] = in[31];
+	assign out[30] = in[31];
+endmodule
+
+module rightShift_4Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
+
+	genvar i;
+	generate
+		for (i = 0; i < 28; i = i+1) begin:
+			ShiftRight4 assign out[i] = in[i+4];
+		end
+	endgenerate
+
+	genvar j;
+	generate
+		for (j = 31; j >= 28; j = j-1) begin: Arith4
+			assign out[j] = in[31];
+		end
+	endgenerate
+endmodule
+
+module rightShift_8Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
+
+	genvar i;
+	generate
+		for (i = 0; i < 24; i = i+1) begin:
+			ShiftRight8 assign out[i] = in[i+8];
+		end
+	endgenerate
+
+	genvar j;
+	generate
+		for (j = 31; j >= 24; j = j-1) begin: Arith8
+			assign out[j] = in[31];
+		end
+	endgenerate
+endmodule
+
+module rightShift_16Bit(out, in);
+	input [31:0] in;
+	output [31:0] out;
+
+	genvar i;
+	generate
+		for (i = 0; i < 16; i = i+1) begin:
+			Shift2 assign out[i] = in[i+16];
+		end
+	endgenerate
+
+	genvar j;
+	generate
+		for (j = 31; j >= 16; j = j-1) begin: Arith16
+			assign out[j] = in[31];
+		end
+	endgenerate
+endmodule
+
+module barrelShiftMux(out, inA, inB, select);  //inA is 1, inB is 0
+	input[31:0] inA, inB;
+	input select;
+	output [31:0] out;
+	
+	wire selectn;
+	not (selectn, select);
+	
+	wire [31:0] selectA, selectB;
+	genvar n;
+	generate
+		for (n = 0; n < 32; n = n+1) begin: selection
+			and(selectA[n], inA[n], select);
+			and(selectB[n], inB[n], selectn);
+			or(out[n], selectA[n], selectB[n]);
+		end
+	endgenerate
+endmodule
+
+module rightBarrelShift(out, in, select);
+	input [31:0] in;
+	input [4:0] select;
+	output [31:0] out;
+	
+	wire [31:0] out16, out8, out4, out2, out1, mux16, mux8, mux4, mux2;
+		
+	rightShift_16Bit Stage1(.out(out16), .in(in));
+	barrelShiftMux Mux16(.out(mux16), .inA(out16), .inB(in), .select(select[4]));  //inA is 1, inB is 0
+	rightShift_8Bit Stage2(.out(out8), .in(mux16));
+	barrelShiftMux Mux8(.out(mux8), .inA(out8), .inB(mux16), .select(select[3]));
+	rightShift_4Bit Stage3(.out(out4), .in(mux8));
+	barrelShiftMux Mux4(.out(mux4), .inA(out4), .inB(mux8), .select(select[2]));
+	rightShift_2Bit Stage4(.out(out2), .in(mux4));
+	barrelShiftMux Mux2(.out(mux2), .inA(out2), .inB(mux4), .select(select[1]));
+	rightShift_1Bit Stage5(.out(out1), .in(mux2));
+	barrelShiftMux Mux1(.out(out), .inA(out1), .inB(mux2), .select(select[0]));
 endmodule
