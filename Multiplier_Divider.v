@@ -3,29 +3,30 @@ module MultDiv(data_operandA, data_operandB, ctrl_MULT, ctrl_DIV, clock, data_re
    input [31:0] data_operandB;
    input ctrl_MULT, ctrl_DIV, clock;             
    output [31:0] data_result; 
-   output [31:0] data_exception;
-   output data_inputRDY, data_resultRDY;
+   output data_exception;
+   output [31:0] data_inputRDY, data_resultRDY;
    
-  
-   
-   wire [31:0] Countout;
+	
+   wire [32:0] Countout;
    wire productEnable;
-   counter_array Counter(.out(Countout), .in(ctrl_MULT), .clk(clock), .reset(0));
+   wire ctrl;
+   or(ctrl, ctrl_MULT, ctrl_DIV);
+   counter_array Counter(.out(Countout), .in(ctrl), .clk(clock), .reset(0));
    
-   assign productEnable = Countout[0] | Countout[31] | Countout[30] | Countout[29] | Countout[28] | Countout[27] | Countout[26] | Countout[25] | Countout[24] |
+   assign productEnable = Countout[32] | Countout[31] | Countout[30] | Countout[29] | Countout[28] | Countout[27] | Countout[26] | Countout[25] | Countout[24] |
 						  Countout[23] | Countout[22] | Countout[21] | Countout[20] | Countout[19] | Countout[18] | Countout[17] | Countout[16] | Countout[15] |
 						  Countout[14] | Countout[13] | Countout[12] | Countout[10] | Countout[9] | Countout[8] | Countout[7] | Countout[6] | Countout[5] |
-						  Countout[4] | Countout[3] | Countout[2] | Countout[1]; 
+						  Countout[4] | Countout[3] | Countout[2] | Countout[1] | Countout[0] | Countout[11]; 
 	assign data_resultRDY = Countout[0];
 	assign data_inputRDY = ~productEnable | Countout[0];
-	
+
 	wire [31:0] adder_result, loop, adjMultiplicand;
 	wire [1:0] check;
 	wire checkState, checkZero;
 	product_array RM(.out(loop), .in(adder_result[31:1]), .clk(clock), .reset(ctrl_MULT), .enable(productEnable));
 	multiplier_array PM(.sumOut(data_result), .ctrlOut(check), .in(data_operandB), .lastSum(adder_result[0]), .clk(clock), .state(ctrl_MULT), .enable(productEnable));
 	assign checkState = check[1] & ~check[0];
-
+	
 	xor(checkZero, check[1], check[0]);
 	wire [31:0] expand;
 	genvar i;
@@ -36,8 +37,43 @@ module MultDiv(data_operandA, data_operandB, ctrl_MULT, ctrl_DIV, clock, data_re
 	endgenerate
 	assign adjMultiplicand = data_operandA & expand;
 	adder MULTadd(.out(adder_result), .multiplier(adjMultiplicand), .multiplicand(loop), .state(checkState)); //state = add/sub	
-	assign data_exception = adder_result;
-					  
+
+	// *********** divide **********//
+	wire [31:0] dividend_A, divisor_B, negate_A, negate_B;
+	
+	adder NegA(.out(negate_A), .multiplier(data_operandA), .multiplicand(0), .state(1));
+
+	adder NegB(.out(negate_B), .multiplier(data_operandB), .multiplicand(0), .state(1));
+	
+	genvar y;
+	generate
+		for(y = 0; y < 32; y=y+1) begin: negSelect
+			Mux21 negSelectionA(.out(dividend_A[y]), .in1(negate_A[y]), .in2(data_operandA[y]), .select(data_operandA[31]));
+			Mux21 negSelectionB(.out(divisor_B[y]), .in1(negate_B[y]), .in2(data_operandB[y]), .select(data_operandB[31]));
+		end
+	endgenerate
+	
+	assign data_exception = ~(divisor_B[31] | divisor_B[30] | divisor_B[29] | divisor_B[28] | divisor_B[27] | divisor_B[26] | divisor_B[25] |
+							  divisor_B[24] | divisor_B[23] | divisor_B[22] | divisor_B[21] | divisor_B[20] | divisor_B[19] | divisor_B[18] |
+							  divisor_B[17] | divisor_B[16] | divisor_B[15] | divisor_B[14] | divisor_B[13] | divisor_B[12] | divisor_B[11] |
+							  divisor_B[10] | divisor_B[9] | divisor_B[8] | divisor_B[7] | divisor_B[6] | divisor_B[5] | divisor_B[4] |
+							  divisor_B[3] | divisor_B[2] | divisor_B[1] | divisor_B[0]); 
+	
+	wire [31:0] divLoop, muxSelect, div_res, sub_result;
+	wire comparator;
+	wire connect;
+
+	remainder_array Remainder(.sumOut(divLoop),.nextBit(connect), .in(muxSelect), .clk(clock), .reset(ctrl_DIV), .enable(productEnable), .state(comparator));
+	quotient_array(.bitOut(connect), .in(dividend_A),.QuotientOut(data_result), .quotientIn(~comparator), .clk(clock), .state(ctrl_DIV), .enable(productEnable));	
+	
+	adder DIVadd(.out(sub_result), .multiplier(divisor_B), .multiplicand(divLoop), .state(1));
+	assign comparator = sub_result[31];
+	genvar m;
+	generate
+		for (m = 0; m <32; m=m+1)begin: selection
+			Mux21 selectMUX(.out(muxSelect[m]), .in1(divLoop[m]), .in2(sub_result[m]), .select(comparator));
+		end
+	endgenerate
 endmodule
 
 module multiplier_array(sumOut, ctrlOut, in, lastSum, clk, state, enable); // state will determine to shift or to load new operation
@@ -62,13 +98,35 @@ module multiplier_array(sumOut, ctrlOut, in, lastSum, clk, state, enable); // st
 
 endmodule
 
+module quotient_array(bitOut, QuotientOut, in, quotientIn, clk, state, enable); // state will determine to shift or to load new operation
+	input [31:0] in; // in is value to load
+	input clk, state, quotientIn, enable;
+	output  bitOut;
+	output [31:0] QuotientOut;
+	wire [32:0] mux_in;
+	wire [31:0] mux_out;
+	
+	assign mux_in[0] = quotientIn;
+	genvar d;
+	generate
+		for(d = 0; d < 32; d = d+1) begin: quotientGen
+			Mux21 productMUX(.out(mux_out[d]), .in1(in[d]), .in2(mux_in[d]), .select(state));
+			dff_sync_clear productDFF(.d(mux_out[d]), .sclr(0), .clk(clk), .f(mux_in[d+1]));
+			assign QuotientOut[d] = mux_in[d+1];
+		end
+	endgenerate
+	assign bitOut = mux_in[32]; 
+
+endmodule
+
+
 module product_array(out, in, clk, reset, enable);
 	input [30:0] in; //in is the sum wire IT HAS TO NOT INCLUDE THE LAST BIT
 	input reset, enable, clk;
 	output [31:0] out;
 	wire [31:0]result;
 	
-	dff_sync_clear FirstDFF(.d(0),. sclr(reset), .clk(clk), .f(result[31]));
+	dff_sync_clear FirstDFF(.d(in[30]),. sclr(reset), .clk(clk), .f(result[31]));
 	assign out[31] = result[31] & enable;
 	genvar c;
 	generate
@@ -78,18 +136,35 @@ module product_array(out, in, clk, reset, enable);
 		end
 	endgenerate
 endmodule
+
+module remainder_array(sumOut, in, nextBit, clk, state, enable, reset); // state will determine to shift or to load new operation 1 - negative
+	input [31:0] in; // load the sub result
+	input clk, state, nextBit, enable, reset;
+	output [31:0] sumOut; // take the other bit fro quotient
+	wire [32:0] mux_in;
+	wire [31:0] mux_out;
 	
+	assign mux_in[0] = nextBit;
+	genvar d;
+	generate
+		for(d = 0; d < 32; d = d+1) begin: RemainderGen
+			Mux21 productMUX(.out(mux_out[d]), .in1(mux_in[d]), .in2(in[d]), .select(state));
+			dff_sync_clear productDFF(.d(mux_out[d]), .sclr(reset), .clk(clk), .f(mux_in[d+1]));
+			assign sumOut[d] = mux_in[d];
+		end
+	endgenerate
+endmodule
 
 module counter_array(out, in, clk, reset);
 	input in, clk, reset;
-	output [31:0] out;
-	wire [32:0] in_dff;
+	output [32:0] out;
+	wire [33:0] in_dff;
 	
-	assign in_dff[32] = in;
+	assign in_dff[33] = in;
 	
 	genvar d;
 	generate
-		for(d = 31; d >= 0; d = d-1) begin: CounterGen
+		for(d = 32; d >= 0; d = d-1) begin: CounterGen
 			dff_sync_clear counterDFF(.d(in_dff[d+1]), .sclr(reset), .clk(clk), .f(in_dff[d]));
 			assign out[d] = in_dff[d];
 		end
