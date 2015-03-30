@@ -1,15 +1,10 @@
-module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writeVal, Reg31Val, write_en, stall_en,
-				FD_Connect,jumpVal, ALU_Afinal, ALU_Bfinal, RegOut_A, RegOut_B, ALU_Mux_select, dmem_en);
+module processor(clock, reset, debug_data, debug_addr);
 
 	input 	clock, reset;
-	output [4:0] write_Reg, Reg31Val;
-	output [31:0]ALU_Mux_select;
-	output dmem_en, write_en, stall_en;
+
 	// GRADER OUTPUTS - YOU MUST CONNECT TO YOUR DMEM
-	output 	[31:0] 	debug_data, writeVal, jumpVal, ALU_Afinal, ALU_Bfinal, RegOut_A, RegOut_B;
-	output	[11:0]	debug_addr, PC_check;
-	output [32:0] FD_Connect;
-	
+	output 	[31:0] 	debug_data;
+	output	[11:0]	debug_addr;
 	// ########################Stage 1#########################
 	wire stall, final_stall, decideTake, PC_jump_overflow;
 	wire [11:0] PC_to_imem, PC_data;
@@ -23,7 +18,6 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	
 	mux31 PCMux(.out(PC_data), .in1(outA[11:0]), .in2(branchDecide31[11:0]), .in3(J_to_PC[11:0]), 
 				.select1(JII_check), .select2(normal_check), .select3(JExtendCheck));
-	assign jumpVal  = J_to_PC;
 	PC pc(.data(PC_data), .clreset(reset), .clock(clock), .out(PC_to_imem), .stall_select(stall));
 	wire [31:0] ALU_Fetch_in;
 	ALU PC_ALU(.data_operandA({{20{1'b0}}, PC_to_imem}), .data_operandB({{31{1'b0}},1'b1}), .ctrl_ALUopcode({5{1'b0}}), 
@@ -33,7 +27,6 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	pipeline_latch FD_PC(.data(branchNotTaken), .clreset(reset), .clock(clock), .out(PCbranchFD));
 	
 	mux21 branch_decide(.out(branchDecide31), .in1(branchTaken), .in2(branchNotTaken), .select(decideTake));
-	
 	sw_instruction_change swTransform(.insn_out(sw_insn), .insn_in(insn));
 	
 	wire swap_select;
@@ -43,14 +36,12 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	wire test_write;
 	check_write_enable writeEnable(.enable(test_write), .opcode(insn[31:27]), .write_reg(insn[26:22]));
 	
-	wire [32:0] FD_connect, pre_connect, connect; // <------------
+	wire [32:0] FD_connect, pre_connect, connect, prev_insn, chain_PC; // <------------
 	assign connect[32] = test_write;
 	assign connect[31:0] = final_insn;
-	mux21_33 FDstallMux(.out(pre_connect), .in1({33{1'b0}}), .in2(connect), .select(stall));
+	
+	mux21_33 FDstallMux(.out(pre_connect), .in1(FD_connect), .in2(connect), .select(stall));
 	IR FD(.data(pre_connect), .clreset(reset), .clock(clock), .out(FD_connect));
-	assign PC_check = PC_to_imem;
-	assign FD_Connect = FD_connect;
-	assign stall_en = stall;
 	// ##################### Stage 2 ##########################
 	wire ALU_overflow, setStatusReg;
 	wire[4:0] readA_in, readB_in, writeReg, readA_final;
@@ -65,9 +56,7 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	xor(jal_reg_enable, MW_connect[32], jal_connect[32]); 
 	regfile Register(.clock(clock), .ctrl_writeEnable(jal_reg_enable), .ctrl_reset(reset), .ctrl_writeReg(writeReg),
 					 .ctrl_readRegA(readA_final), .ctrl_readRegB(readB_in), .data_writeReg(jal_val), .data_readRegA(outA), .data_readRegB(outB));
-	assign write_en = jal_reg_enable;
-	assign RegOut_A=final_outA;
-	assign RegOut_B=final_outB;
+	
 	wire [31:0] final_outA, final_outB, DX_connectA, DX_connectB;
 	mux21 RegA_nop(.out(final_outA), .in1({32{1'b0}}), .in2(outA), .select(final_stall));
 	mux21 RegB_nop(.out(final_outB), .in1({32{1'b0}}), .in2(outB), .select(final_stall));
@@ -81,7 +70,7 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	sw_immediate I_imm(.imm(I_restored), .insn(FD_connect));
 	sign_extension IExtend(.out(I_signExtend), .immediate(I_restored));
 	wire Iextend_check;
-	assign Iextend_check = ~FD_connect[31] & FD_connect[28] & FD_connect[27];
+	assign Iextend_check = blt_check | bne_check;
 	
 	wire [31:0] IExtendCheck, jumpALU_B;
 	
@@ -103,11 +92,16 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	
 	wire [1:0] outBypassA, outBypassB;
 	wire [32:0] XM_connect, DX_connect;
+	wire blt_check, bne_check;
+	assign blt_check = ~FD_connect[31] & ~FD_connect[30] & FD_connect[29] & FD_connect[28] & ~FD_connect[27];
+	assign bne_check = ~FD_connect[31] & ~FD_connect[30] & ~FD_connect[29] & FD_connect[28] & ~FD_connect[27];
 	
-	bypassJump_select bypassRegA(.out(outBypassA), .reg_writeXM(XM_connect[26:22]), .reg_writeWM(MW_connect[26:22]), .reg_writeDX(DX_connect[26:22]), 
-								 .writeXM_en(XM_connect[32]), .writeWM_en(MW_connect[32]), .writeDX_en(DX_connect[32]), .reg_readFD(readA_final));
-	bypassJump_select bypassRegB(.out(outBypassB), .reg_writeXM(XM_connect[26:22]), .reg_writeWM(MW_connect[26:22]), .reg_writeDX(DX_connect[26:22]), 
-								 .writeXM_en(XM_connect[32]), .writeWM_en(MW_connect[32]), .writeDX_en(DX_connect[32]), .reg_readFD(readB_in));
+	bypassJump_select bypassRegA(.out(outBypassA), .reg_writeXM(XM_connect[26:22]), .reg_writeWM(MW_connect[26:22]), 
+								 .reg_writeDX(DX_connect[26:22]), .writeXM_en(XM_connect[32]), .writeWM_en(MW_connect[32]), 
+								 .writeDX_en(DX_connect[32]), .reg_readFD(readA_final));
+	bypassJump_select bypassRegB(.out(outBypassB), .reg_writeXM(XM_connect[26:22]), .reg_writeWM(MW_connect[26:22]), 
+								 .reg_writeDX(DX_connect[26:22]), .writeXM_en(XM_connect[32]), .writeWM_en(MW_connect[32]),
+								 .writeDX_en(DX_connect[32]), .reg_readFD(readB_in));
 	wire [31:0] bypassOutA, bypassOutB;
 	mux41p bypassJumpMuxA(.out(bypassOutA), .in1(result_out), .in2(XM_ALU_out), .in3(write_val), .in4(outA), .select(outBypassA));
 	mux41p bypassJumpMuxB(.out(bypassOutB), .in1(result_out), .in2(XM_ALU_out), .in3(write_val), .in4(outB), .select(outBypassB));
@@ -128,9 +122,6 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	wire statusEn;
 	assign statusEn = setStatusReg | (FD_connect[31] & FD_connect[27]);
 	statusReg STATUS(.data(write_status), .clreset(reset), .clock(clock), .out(statusOut), .en(statusEn));
-	wire blt_check, bne_check;
-	assign blt_check = ~FD_connect[31] & ~FD_connect[30] & FD_connect[29] & FD_connect[28] & ~FD_connect[27];
-	assign bne_check = ~FD_connect[31] & ~FD_connect[30] & ~FD_connect[29] & FD_connect[28] & ~FD_connect[27];
 	
 	wire lessCheck;
 	or(lessCheck, blt_check, BEX_check);
@@ -139,7 +130,7 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	or(decideTake, finalNotEqual, finalLessThan);
 	
 	jal_write_chain jal_write(.writeOut(jal_connect), .opcode(FD_connect[31:27]), .link_val(PCbranchFD), .reset(reset), .clock(clock));
-	assign Reg31Val = readA_in;
+
 	wire [32:0] stallSelect; //<--------
 	mux21_33 IR_stall(.out(stallSelect), .in1({33{1'b0}}), .in2(FD_connect), .select(final_stall));
 	IR DX(.data(stallSelect), .clreset(reset), .clock(clock), .out(DX_connect));
@@ -147,8 +138,6 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	stall_logic stallUnit(.out(stall), .DX_opcode(DX_connect[31:27]), .FD_opcode(FD_connect[31:27]), 
 					  .DX_write(DX_connect[26:22]), .FD_Rone(FD_connect[21:17]), .FD_Rtwo(FD_connect[16:12]));
 	or(final_stall, stall, decideTake, JExtendCheck);
-	assign writeVal = jal_val;
-	assign write_Reg = writeReg;
 	//###################### Stage 3 ##########################
 	wire [31:0] ALU_A, imm_mux;
 	wire [2:0] mux_selectA, mux_selectB;
@@ -185,12 +174,11 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 								
 	wire[4:0] opcode_select;
 	mux21_imm opcodeSelect(.out(opcode_select), .in1({5{1'b0}}), .in2(DX_connect[6:2]), .select(immediate_select));
-	assign ALU_Mux_select = result_out;
+
 	wire [31:0] result_out, latchB;
 	ALU DX_ALU(.data_operandA(ALU_A), .data_operandB(ALU_B), .ctrl_ALUopcode(opcode_select), 
 		.ctrl_shiftamt(DX_connect[11:7]), .data_result(result_out), .isNotEqual(), .isLessThan(), .overflow(ALU_overflow));
-	assign ALU_Afinal = ALU_A;
-	assign ALU_Bfinal = ALU_B;
+
 	pipeline_last XM_ALUout(.data(result_out), .clreset(reset), .clock(clock), .out(XM_ALU_out));
 	pipeline_last XM_B(.data(imm_mux), .clreset(reset), .clock(clock), .out(latchB));
 	
@@ -223,9 +211,7 @@ module processor(clock, reset, debug_data, debug_addr, PC_check, write_Reg, writ
 	// #################### Stage 5 ##################################
 	//wire [31:0] write_val; <--- assigned in stage 2
 	mux21 writeValMux(.out(write_val), .in1(MW_connectDmem), .in2(MW_connectOut), .select(MW_connect[30]));
-	assign dmem_en = save_enable;
 	////////////////////////////////////////////////////////////
-	
 		
 	// You'll need to change where the dmem and imem read and write...
 	dmem mydmem(	.address	(debug_addr),
@@ -257,7 +243,7 @@ module PC(data, clreset, clock, out, stall_select);
 			if(~stall_select) begin
 				out = data;
 			end else begin
-				out = out - {{11{1'b0}},1'b1};
+				out = out;
 			end
 		end 	
 	end
@@ -352,12 +338,12 @@ module check_write_enable(enable, opcode, write_reg);
 	output enable; 
 	
 	//test enable
-	wire RTypeTest, OPTest, ZeroRegTest, Addi;
+	wire RTypeTest, ZeroRegTest, Addi, Reg31Test;
 	assign Addi = ~opcode[4] & opcode[2] & ~opcode[1] & opcode[0];
 	nor(RTypeTest, opcode[0], opcode[1], opcode[2], opcode[3], opcode[4]); //00000 case
-	and(OPTest, RTypeTest, opcode[3]); //lw case
 	or(ZeroRegTest, write_reg[0], write_reg[1], write_reg[2], write_reg[3], write_reg[4]);
-	assign enable = (Addi | OPTest | RTypeTest) & ZeroRegTest;
+	nand(Reg31Test, write_reg[0], write_reg[1], write_reg[2], write_reg[3], write_reg[4]);
+	assign enable = (Addi | RTypeTest | opcode[3]) & ZeroRegTest & Reg31Test;
 endmodule
 
 module checkRegSwap(out, opcode);
@@ -595,7 +581,7 @@ module sw_immediate(imm, insn);
 	endgenerate
 endmodule
 
-module bypassReg_select(out, reg_writeXM, reg_writeWM, writeXM_en, writeWM_en, reg_readDX);// A and B is the same
+module bypassReg_select(out, reg_writeXM, reg_writeWM, writeXM_en, writeWM_en, reg_readDX);
 	input [4:0] reg_writeXM, reg_writeWM, reg_readDX;
 	input writeXM_en, writeWM_en;
 	output [2:0]out; // 0 - is neighbour, 1 is gap and 2 is normal
